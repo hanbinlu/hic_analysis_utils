@@ -147,7 +147,7 @@ class LoopSet:
     ):
         all_anchors = self.all_anchors.df.copy()
         # extend
-        all_anchors["Start"] = all_anchors.Start + extend_size
+        all_anchors["Start"] = all_anchors.Start - extend_size
         all_anchors["End"] = all_anchors.End + extend_size
         # count overlapping
         all_anchors = (
@@ -160,7 +160,7 @@ class LoopSet:
             .df
         )
         # shrink
-        all_anchors["Start"] = all_anchors.Start - extend_size
+        all_anchors["Start"] = all_anchors.Start + extend_size
         all_anchors["End"] = all_anchors.End - extend_size
         self.all_anchors = pr.PyRanges(all_anchors)
         self.annotate_anchors([f"Num{name}Peak", f"Frac{name}Peak"])

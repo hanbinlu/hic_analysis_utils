@@ -499,11 +499,11 @@ def _norm_matrix(mat, norm_method, chro, diag_expected, fill_zero):
             "balanced.avg"
         ].values.copy()
         chro_diag_values[chro_diag_values == 0] = np.nan
-        chro_diag_mins = diag_expected[diag_expected.region == chro][
-            "diag.min"
-        ].values
         mat.data /= chro_diag_values[np.abs(mat.row - mat.col)]
         if fill_zero:
+            chro_diag_mins = diag_expected[diag_expected.region == chro][
+                "diag.min"
+            ].values
             diag_pseudo_zero = chro_diag_mins / chro_diag_values
         else:
             diag_pseudo_zero = None
