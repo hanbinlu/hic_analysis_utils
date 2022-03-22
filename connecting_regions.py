@@ -520,3 +520,44 @@ def _take_submat(
         sub_mat = np.fliplr(np.transpose(np.fliplr(sub_mat)))
 
     return sub_mat
+
+
+def virtual_4C(clr, bait, prey):
+    """
+    Generate 4C profile
+    bait: ("chr1", 4000000, 500000)
+    prey: (1000000, 2000000), indicate to extend 1M to the left and 2M to the right
+    """
+    chro, start, end = bait
+    chro_bins, chro_offset = clr.bins().fetch(chro), clr.offset(chro)
+    chro_bins["ID"] = chro_bins.index
+    mat = clr.matrix(balance=True, sparse=True).fetch(chro).tocsr()
+
+    bait_bid_coors = transform_coor_to_bin_id(
+        chro_bins[["chrom", "start", "end", "ID"]],
+        pd.DataFrame({"chrom": [chro], "start": start, "end": end}),
+        chro_offset,
+    )
+    prey_bid_coors = transform_coor_to_bin_id(
+        chro_bins[["chrom", "start", "end", "ID"]],
+        pd.DataFrame(
+            {"chrom": [chro], "start": start - prey[0], "end": end + prey[1]}
+        ),
+        chro_offset,
+    )
+    row = bait_bid_coors.start_bid[0], bait_bid_coors.end_bid[0]
+    col = prey_bid_coors.start_bid[0], prey_bid_coors.end_bid[0]
+    # symetric matrix
+    track_4c = (
+        mat[row[0] : row[1] + 1, col[0] : col[1] + 1]
+        + mat[col[0] : col[1] + 1, row[0] : row[1] + 1].T
+    )
+    track_4c = track_4c.toarray()
+    n, m = track_4c.shape
+    # scale back diagonal
+    offset = (m - n) // 2
+    for i, j in enumerate(range(offset, offset + n)):
+        track_4c[i, j] /= 2
+    # bin coordinate
+    track_4c_coor = chro_bins.start.values[col[0] : col[1] + 1]
+    return track_4c, track_4c_coor
