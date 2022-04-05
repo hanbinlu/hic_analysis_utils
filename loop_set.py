@@ -2,6 +2,8 @@ import cooler
 import pandas as pd
 import numpy as np
 import pyranges as pr
+from scipy.spatial import distance_matrix
+from itertools import combinations
 from typing import Dict
 from juice2cool import mad_max_bin_mask
 
@@ -89,6 +91,12 @@ class LoopSet:
             return None
         else:
             return self.loops_bedpe.iloc[:, :6]
+
+    def anchor_coors(self):
+        # drop annotated columns from anchor list
+        self.all_anchors = self.all_anchors.drop()
+        self.anchor_i = self.anchor_i.drop()
+        self.anchor_j = self.anchor_j.drop()
 
     def annotate_loops(self, columns, update=True):
         """
@@ -255,6 +263,51 @@ class LoopSet:
             ignore_index=True,
         )
         self.all_anchors = pr.PyRanges(all_anchors)
+        # i
+        # anchor_i = self.anchor_i.cluster(count=True, slack=slack).df
+
+        # anchor_i = pd.concat(
+        #     map(
+        #         lambda df: pd.DataFrame(
+        #             {
+        #                 "Chromosome": df.Chromosome,
+        #                 "Start": df.Start,
+        #                 "End": df.End,
+        #                 "Cluster": df.Cluster,
+        #                 "Cluster_start": np.ones(len(df), dtype=int)
+        #                 * ((df.Start.min() + df.End.max()) // 2 - res // 2),
+        #                 "Cluster_end": np.ones(len(df), dtype=int)
+        #                 * ((df.Start.min() + df.End.max()) // 2 + res // 2),
+        #             }
+        #         ),
+        #         (grp[1] for grp in anchor_i.groupby("Cluster")),
+        #     ),
+        #     ignore_index=True,
+        # )
+        # self.anchor_i = pr.PyRanges(anchor_i)
+        # # j
+        # anchor_j = self.anchor_j.cluster(count=True, slack=slack).df
+
+        # anchor_j = pd.concat(
+        #     map(
+        #         lambda df: pd.DataFrame(
+        #             {
+        #                 "Chromosome": df.Chromosome,
+        #                 "Start": df.Start,
+        #                 "End": df.End,
+        #                 "Cluster": df.Cluster,
+        #                 "Cluster_start": np.ones(len(df), dtype=int)
+        #                 * ((df.Start.min() + df.End.max()) // 2 - res // 2),
+        #                 "Cluster_end": np.ones(len(df), dtype=int)
+        #                 * ((df.Start.min() + df.End.max()) // 2 + res // 2),
+        #             }
+        #         ),
+        #         (grp[1] for grp in anchor_j.groupby("Cluster")),
+        #     ),
+        #     ignore_index=True,
+        # )
+        # self.anchor_j = pr.PyRanges(anchor_j)
+
         # assign cluster information back to original anchors
         self.annotate_anchors(["Cluster", "Cluster_start", "Cluster_end"])
         return self.annotate_loops(
@@ -262,21 +315,18 @@ class LoopSet:
         )
 
     def rounding_cluster_adjacent_anchors(
-        self, bins: pr.PyRanges, side, update=True
+        self,
+        bins: pr.PyRanges,
     ):
         """
         Find the bins that overlapping with anchors and merge cluster by the anchor bins.
         Handle case: two anchors do not directly overlapping but an genomic bin is overlapping with both of them.
         They will be merged and given same cluster ID.
         """
-        raise NotImplementedError("Implement clustering using combined anchors")
-        # only keep coordinate columns
-        if side == "left":
-            anchors = self.anchor_i.drop()
-        elif side == "right":
-            anchors = self.anchor_j.drop()
+        # TODO: implement distance for merging
 
         # split anchors by bins
+        anchors = self.all_anchors.drop()
         anchor_bins = bins.join(anchors, how="right")
         # cluster; continuous bins will be merge into a cluster
         anchor_bins = (
@@ -287,36 +337,32 @@ class LoopSet:
         anchor_bins = anchor_bins.rename(
             columns={"Start_b": "Start", "End_b": "End"}
         )
-        if update:
-            # join the cluster information to the anchor
-            if side == "left":
-                self.anchor_i = pr.PyRanges(
-                    self.anchor_i.df.merge(
-                        anchor_bins,
-                        on=["Chromosome", "Start", "End"],
-                        how="left",
-                    )
-                )
-            elif side == "right":
-                self.anchor_j = pr.PyRanges(
-                    self.anchor_j.df.merge(
-                        anchor_bins,
-                        on=["Chromosome", "Start", "End"],
-                        how="left",
-                    )
-                )
-            return None
-        else:
-            return anchor_bins
+        self.all_anchors = pr.PyRanges(
+            self.all_anchors.df.merge(
+                anchor_bins,
+                on=["Chromosome", "Start", "End"],
+                how="left",
+            )
+        )
+
+        self.annotate_anchors(["Cluster"])
+
+    def filter_loops_by_mad_max(self, clr, mad_max=5):
+        return LoopSet(
+            _drop_loops_at_low_signal_bins(self.loops_bedpe, clr, mad_max)
+        )
+
+    def filter_loops_by_distance(self, short, long):
+        return LoopSet(_distance_filter(self.loops_bedpe, short, long))
 
 
-def distance_filter(loopset, short, long):
-    d = loopset.loops_bedpe.x2 - loopset.loops_bedpe.x1
-    lpbp = loopset.loops_bedpe[(d >= short) & (d <= long)]
-    return LoopSet(lpbp)
+def _distance_filter(loop_df, short, long):
+    d = loop_df.x2 - loop_df.x1
+    lpbp = loop_df[(d >= short) & (d <= long)].reset_index(drop=True)
+    return lpbp
 
 
-def drop_loops_at_low_signal_bins(
+def _drop_loops_at_low_signal_bins(
     loop_bedpe: pd.DataFrame, clr: cooler.Cooler, mad_max=5
 ):
     """
@@ -413,7 +459,7 @@ def combine_multi_res_loops(
         if mcool is not None:
             clr_path = mcool + f"::resolutions/{res}"
             clr = cooler.Cooler(clr_path)
-            res_final_loops = drop_loops_at_low_signal_bins(
+            res_final_loops = _drop_loops_at_low_signal_bins(
                 res_final_loops, clr, **kwargs
             )
 
@@ -424,8 +470,7 @@ def combine_multi_res_loops(
 
     # pool loops at different resolution and use rounding merge
     pooled_loopset = LoopSet(pooled_loops, name)
-    pooled_loopset.rounding_cluster_adjacent_anchors(bins, "left")
-    pooled_loopset.rounding_cluster_adjacent_anchors(bins, "right")
+    pooled_loopset.rounding_cluster_adjacent_anchors(bins)
     pooled_merged_loops = pooled_loopset.annotate_loops(
         ["Cluster"], update=False
     )
@@ -440,7 +485,11 @@ def combine_multi_res_loops(
 
 
 def merge_loopset(
-    loopset_to_merge, clr_path=None, anchor_merge_dist=0, res=10_000
+    loopset_to_merge,
+    clr_path=None,
+    anchor_merge_dist=0,
+    res=10_000,
+    aggressive_collapse=False,
 ):
     # merge data
     merged_loops = pd.concat(
@@ -449,19 +498,29 @@ def merge_loopset(
     if clr_path is not None:
         for clrp in clr_path:
             clr = cooler.Cooler(clrp)
-            merged_loops = drop_loops_at_low_signal_bins(
+            merged_loops = _drop_loops_at_low_signal_bins(
                 merged_loops, clr, mad_max=5
             )
-    names = [lps.loops_bedpe.Name[0] for lps in loopset_to_merge]
+    names = [lps.loops_bedpe.Name.iloc[0] for lps in loopset_to_merge]
     merged_loopset = LoopSet(merged_loops, None)
     merged_loopset.cluster_adjacent_anchors(res=res, slack=anchor_merge_dist)
+    for name in names:
+        print(f"#{name}:", (merged_loopset.loops_bedpe.Name == name).sum())
     # membership of loops
     # representative of loop cluster by centering
     loop_grp = merged_loopset.loops_bedpe.groupby(
-        by=["Cluster_I", "Cluster_J"], as_index=False
+        by=["Cluster_I", "Cluster_J"], as_index=False, group_keys=False
     )
     merged_loops = loop_grp.apply(
-        lambda df: pd.Series(
+        lambda df: _solve_cluster(df, aggressive_collapse, names)
+    ).reset_index(drop=True)
+
+    return LoopSet(merged_loops)
+
+
+def _solve_cluster(df, collapse, names):
+    if collapse:
+        return pd.Series(
             {
                 "chr1": df.chr1.values[0],
                 "x1": df.Cluster_start_I.values[0],
@@ -472,6 +531,73 @@ def merge_loopset(
                 **{name: name in df.Name.unique() for name in names},
             }
         )
-    )
+    else:
+        # maintain the total number and not collapse in to one representation
+        # by greedy assigning sets with smallest pairwise distance sum
+        coors = np.array([(df.y1 + df.x1) // 2, (df.y2 + df.x2) // 2]).T
+        source = df.Name.values
+        indice = np.arange(len(df))
+        splitted_set = _find_closest_set(coors, source, indice)
+        sz = len(splitted_set)
+        chr1 = [df.chr1.values[0]] * sz
+        x1 = [df.Cluster_start_I.values[0]] * sz
+        y1 = [df.Cluster_end_I.values[0]] * sz
+        chr2 = [df.chr2.values[0]] * sz
+        x2 = [df.Cluster_start_J.values[0]] * sz
+        y2 = [df.Cluster_end_J.values[0]] * sz
+        indicators = {
+            name: [name in df.Name.iloc[i].unique() for i in splitted_set]
+            for name in names
+        }
+        cnt = 0
+        for _, i in indicators.items():
+            cnt += np.array(i).sum()
+        if cnt != len(source):
+            ValueError(coors, cnt)
 
-    return LoopSet(merged_loops)
+        return pd.DataFrame(
+            {
+                "chr1": chr1,
+                "x1": x1,
+                "y1": y1,
+                "chr2": chr2,
+                "x2": x2,
+                "y2": y2,
+                **indicators,
+            }
+        )
+
+
+def _find_closest_set(coors, source, indice):
+    pairs = []
+    d = distance_matrix(coors, coors)
+    while True:
+        source_unq = np.unique(source)
+        n_unq = len(source_unq)
+        if n_unq == 1:
+            # Terminated: no pairs find for the rest
+            pairs.extend([np.array([i]) for i in indice])
+            return pairs
+        elif n_unq == 0:
+            # Terminated: nothing left
+            return pairs
+        else:
+            # find a set of len(source_unq) with smallest pairwise distance sum
+            min_dist_sum, min_dist_set = 1e30, None
+            for _comb_idx in combinations(np.arange(len(source)), n_unq):
+                comb_idx = np.array(_comb_idx)
+                if len(np.unique(source[comb_idx])) != n_unq:
+                    continue
+                # sum pairwise distance
+                comb = indice[comb_idx]
+                ds = np.array([d[x, y] for x, y in combinations(comb, 2)]).sum()
+                if ds <= min_dist_sum:
+                    min_dist_set = comb
+                    min_dist_sum = ds
+            # prepare for next iteration
+            # remove found set (greedy)
+            pairs.append(min_dist_set)
+            keep_idx = np.where(~np.isin(indice, min_dist_set))[0]
+            coors = coors[keep_idx, :]
+            source = source[keep_idx]
+            indice = indice[keep_idx]
