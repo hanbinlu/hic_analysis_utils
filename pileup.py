@@ -20,6 +20,7 @@ def pileup_at_loops(
     ignore_diag=2,
     preserve_anchor_order=True,
     fill_zero=False,
+    balanced=True,
 ):
     # if quantify_method == "expected" and diag_expected is None:
     #     diag_expected = expected_by_diag_avg(clr)
@@ -36,6 +37,7 @@ def pileup_at_loops(
                 mad_max_mask_bins,
                 preserve_anchor_order,
                 fill_zero,
+                balanced,
             ),
             loop_bedpe_chunker,
         )
@@ -59,6 +61,7 @@ def _pileup_at_loops(
     mad_max_mask_bins=None,
     preserve_anchor_order=True,
     fill_zero=False,
+    balanced=True,
 ):
     sub_mat_gen = _loop_neighborhood_generator(
         clr,
@@ -70,6 +73,7 @@ def _pileup_at_loops(
         mad_max_mask_bins,
         preserve_anchor_order,
         fill_zero,
+        balanced,
     )
     n = 2 * flank_bins + 1
     count_mat, sum_mat = np.zeros((n, n)), np.zeros((n, n))
@@ -91,6 +95,7 @@ def _loop_neighborhood_generator(
     mad_max_mask_bins=None,
     preserve_anchor_order=True,
     fill_zero=False,
+    balanced=True,
 ):
     """Generate neighborhood sub-matrix for each loop entry"""
     for chro, chro_loops in loop_bedpe.groupby("chr1"):
@@ -98,7 +103,9 @@ def _loop_neighborhood_generator(
             continue
         chro_bins, chro_offset = clr.bins().fetch(chro), clr.offset(chro)
         chro_bins["ID"] = chro_bins.index
-        mat = clr.matrix(balance=True, sparse=True).fetch(chro)
+        mat = (
+            clr.matrix(balance=balanced, sparse=True).fetch(chro).astype(float)
+        )
         n = mat.shape[0]
         if mad_max_mask_bins is not None:
             mad_max_mask_vec = chro_bins.index.isin(mad_max_mask_bins.index)
@@ -151,19 +158,29 @@ def _loop_neighborhood_generator(
             yield sub_mat
 
 
-def expected_by_diag_avg(clr):
+def expected_by_diag_avg(clr, balanced=True):
     chromsizes, chromosomes = clr.chromsizes, clr.chromnames
     supports = [(chrom, 0, chromsizes[chrom]) for chrom in chromosomes]
     # Calculate expected interactions for chromosome
     with mp.Pool(8) as pool:
-        expected = cooltools.expected.diagsum(
-            clr,
-            regions=supports,
-            transforms={
-                "balanced": lambda p: p["count"] * p["weight1"] * p["weight2"]
-            },
-            map=pool.map,
-        )
+        if balanced:
+            expected = cooltools.expected.diagsum(
+                clr,
+                regions=supports,
+                transforms={
+                    "balanced": lambda p: p["count"]
+                    * p["weight1"]
+                    * p["weight2"]
+                },
+                map=pool.map,
+            )
+        else:
+            expected = cooltools.expected.diagsum(
+                clr,
+                regions=supports,
+                transforms={"balanced": lambda p: p["count"]},
+                map=pool.map,
+            )
 
     # Calculate average number of interactions per diagonal
     expected["balanced.avg"] = expected["balanced.sum"] / expected["n_valid"]
@@ -228,6 +245,7 @@ def comparative_pileup_at_loops(
     ignore_diag=2,
     preserve_anchor_order=True,
     norm_method="znorm",
+    balanced=True,
 ):
     with mp.Pool(parallel) as pool:
         results = pool.map(
@@ -241,6 +259,7 @@ def comparative_pileup_at_loops(
                 mad_max_mask_bins,
                 preserve_anchor_order,
                 norm_method,
+                balanced,
             ),
             loop_bedpe_chunker,
         )
@@ -264,6 +283,7 @@ def _comparative_pileup_at_loops(
     mad_max_mask_bins=None,
     preserve_anchor_order=True,
     norm_method="znorm",
+    balanced=True,
 ):
     """ """
     n = 2 * flank_bins + 1
@@ -275,7 +295,7 @@ def _comparative_pileup_at_loops(
         for i, clr in enumerate([clr1, clr2]):
             chro_bins, chro_offset = clr.bins().fetch(chro), clr.offset(chro)
             chro_bins["ID"] = chro_bins.index
-            mat = clr.matrix(balance=True, sparse=True).fetch(chro)
+            mat = clr.matrix(balance=balanced, sparse=True).fetch(chro)
             n = mat.shape[0]
             if mad_max_mask_bins is not None:
                 mad_max_mask_vec = chro_bins.index.isin(
@@ -437,7 +457,7 @@ def _fill_zero_by_diag(mat, diag_index_offset, diag_val_to_fill):
     return mat
 
 
-def _get_diags_df(tri_df, n_diags=None):
+def _get_diags_df(tri_df, n_diags=None, scaled=True):
     if n_diags is None:
         n_diags = tri_df[["I", "J"]].max().max() + 1
 
@@ -445,7 +465,15 @@ def _get_diags_df(tri_df, n_diags=None):
         diag = diag[diag != 0]
         if len(diag) > 0:
             mean = np.mean(diag)
-            std = np.std(diag) if np.std(diag) != 0 else 1
+            if scaled:
+                std = (
+                    np.std(diag) / np.sqrt(len(diag))
+                    if np.std(diag) != 0
+                    else 1
+                )
+            else:
+                std = np.std(diag) if np.std(diag) != 0 else 1
+
             if math.isnan(mean):
                 mean = 0
             if math.isnan(std):

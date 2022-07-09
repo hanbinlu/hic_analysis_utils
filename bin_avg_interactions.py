@@ -1,7 +1,10 @@
+from tkinter import N
 import numpy as np
+import pyranges as pr
 import cooltools
 import cooltools.saddle, cooltools.expected
 import multiprocess as mp
+from pileup import expected_by_diag_avg
 
 
 def compute_saddle(
@@ -72,6 +75,155 @@ def compute_saddle(
     )
 
     return S, C, group_E1_bounds
+
+
+def compute_saddle_generic(
+    compartment,
+    clr,
+    min_diag_dist=2_000_000,
+    n_groups=40,
+    grouping_center=0,
+    q_low=0.025,
+    q_hi=0.975,
+    parallel=8,
+    n_bins_for_stats=5,
+):
+    # Digitize eigenvectors, i.e. group genomic bins into
+    # equisized groups according to their eigenvector rank.
+    N_GROUPS = (
+        n_groups - 2
+    )  # divide remaining 97.5% of the genome into 38 equisized groups, 2.5% each
+
+    # bin eigenvector track
+    if grouping_center is not None:
+        # equal binning separated by grouping center
+        group_E1_bounds = np.append(
+            np.percentile(
+                compartment.E1[compartment.E1 <= grouping_center],
+                np.linspace(q_low, 1, N_GROUPS // 2 + 1) * 100,
+            )[:-1],
+            np.array([0]),
+        )
+        group_E1_bounds = np.append(
+            group_E1_bounds,
+            np.percentile(
+                compartment.E1[compartment.E1 >= grouping_center],
+                np.linspace(0, q_hi, N_GROUPS // 2 + 1) * 100,
+            )[1:],
+        )
+    else:
+        # bin on the whole range
+        group_E1_bounds = (
+            np.percentile(
+                compartment.E1,
+                np.linspace(q_low, q_hi, N_GROUPS) * 100,
+            ),
+        )
+
+    # Calculate expected interactions for chromosome
+    diag_expected = expected_by_diag_avg(clr)
+
+    # Make a function that do one chromasome at a time
+    def chrom_saddle(
+        chro, clr, compartment, diag_expected, group_E1_bounds, min_diag_dist
+    ):
+        bins, offset = clr.bins().fetch(chro), clr.offset(chro)
+        bins["ID"] = bins.index.values
+        # bin of interest
+        bins_pr = pr.PyRanges(
+            bins.rename(
+                columns={
+                    old: new
+                    for old, new in zip(
+                        bins.columns[:3], ["Chromosome", "Start", "End"]
+                    )
+                }
+            )
+        )
+        compartment_pr = pr.PyRanges(
+            compartment.rename(
+                columns={
+                    old: new
+                    for old, new in zip(
+                        compartment.columns[:3], ["Chromosome", "Start", "End"]
+                    )
+                }
+            )
+        )
+        boi = bins_pr.join(compartment_pr).drop_duplicate_positions()
+        boi, _ = cooltools.saddle.digitize_track(
+            group_E1_bounds, track=(boi.df, "E1")
+        )
+        boi_idx = boi.ID.values - offset
+
+        # ob/exp matrix
+        mat = (
+            clr.matrix(balance=True, sparse=True)
+            .fetch(chro)
+            .astype(float)
+            .tocoo()
+        )
+        # ob / exp
+        chro_diag_values = diag_expected[diag_expected.region == chro][
+            "balanced.avg"
+        ].values.copy()
+        chro_diag_values[chro_diag_values == 0] = np.nan
+        mat.data /= chro_diag_values[np.abs(mat.row - mat.col)]
+        mat = mat.toarray()
+
+        # subtract matrix
+        mat = mat[boi_idx, :][:, boi_idx]
+        dist = np.repeat(boi.Start.values, len(boi)).reshape(
+            (len(boi), len(boi))
+        )
+        dist = np.abs(dist - dist.T)
+        mat[dist <= min_diag_dist] = np.nan
+        # process to saddle data
+        S, C = np.zeros((n_groups, n_groups)), np.zeros((n_groups, n_groups))
+        for i in range(n_groups):
+            idx_i = boi["E1.d"].values == i
+            mat_ = mat[idx_i, :]
+            for j in range(n_groups):
+                idx_j = boi["E1.d"].values == j
+                valid_idx = np.logical_not(np.isnan(mat_[:, idx_j]))
+                C[i, j] += np.sum(valid_idx)
+                S[i, j] += np.nansum((mat_[:, idx_j]))
+
+        return S, C
+
+    with mp.Pool(parallel) as pool:
+        S_C_results = pool.map(
+            lambda chro: chrom_saddle(
+                chro,
+                clr,
+                compartment,
+                diag_expected,
+                group_E1_bounds,
+                min_diag_dist,
+            ),
+            compartment.chrom.unique(),
+        )
+
+    S, C = np.zeros((n_groups, n_groups)), np.zeros((n_groups, n_groups))
+    for S_, C_ in S_C_results:
+        S += S_
+        C += C_
+
+    stats = []
+    for S_, C_ in S_C_results:
+        saddle_data = S_ / C_  # [1:-1, 1:-1]
+        a_b = np.nanmean(
+            saddle_data[0:n_bins_for_stats, n_groups - n_bins_for_stats :]
+        )
+        a_a = np.nanmean(
+            saddle_data[
+                n_groups - n_bins_for_stats :, n_groups - n_bins_for_stats :
+            ]
+        )
+        b_b = np.nanmean(saddle_data[0:n_bins_for_stats, 0:n_bins_for_stats])
+        stats.append((a_a * b_b) / (a_b * a_b))
+
+    return S, C, group_E1_bounds, np.array(stats)
 
 
 def compartmental_segregation(

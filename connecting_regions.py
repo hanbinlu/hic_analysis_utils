@@ -14,7 +14,6 @@ def connecting_strength_over_background(
     initial_search_flank=7,
     max_search_flank=20,
     na_cutoff=3,
-    weight=(0.5, 0.5),
     ignore_diag=2,
     fold_over_background=1.5,
     parallel=1,
@@ -22,6 +21,8 @@ def connecting_strength_over_background(
     norm_method="obexp",
     local_norm=False,
     fill_zero=True,
+    balanced=True,
+    sampling_ratio=1,
 ):
     # if diag_expected is None:
     #     diag_expected = expected_by_diag_avg(clr)
@@ -36,13 +37,14 @@ def connecting_strength_over_background(
                 initial_search_flank,
                 max_search_flank,
                 na_cutoff,
-                weight,
                 ignore_diag,
                 fold_over_background,
                 mad_max_mask_bins,
                 norm_method,
                 local_norm,
                 fill_zero,
+                balanced,
+                sampling_ratio,
             ),
             loop_bedpe_chunker,
         )
@@ -62,21 +64,28 @@ def _connecting_strength_over_background(
     initial_search_flank=7,
     max_search_flank=20,
     na_cutoff=3,
-    weight=(0.5, 0.5),
     ignore_diag=2,
     fold_over_background=1.5,
     mad_max_mask_bins=None,
     norm_method="obexp",
     local_norm=False,
     fill_zero=True,
+    balanced=True,
+    sampling_ratio=1,
 ):
     loop_with_cs = pd.DataFrame()
+    if sampling_ratio < 1:
+        loop_bedpe = loop_bedpe.sample(
+            int(np.ceil(len(loop_bedpe) * sampling_ratio))
+        )
     for chro, chro_loops in loop_bedpe.groupby("chr1"):
         if chro not in clr.chromnames:
             continue
         chro_bins, chro_offset = clr.bins().fetch(chro), clr.offset(chro)
         chro_bins["ID"] = chro_bins.index
-        mat = clr.matrix(balance=True, sparse=True).fetch(chro).astype(float)
+        mat = (
+            clr.matrix(balance=balanced, sparse=True).fetch(chro).astype(float)
+        )
         n = mat.shape[0]
 
         # since sparse matrix change NaN to 0, we keep track of which bins should be mask as NaN

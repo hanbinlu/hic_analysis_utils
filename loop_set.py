@@ -490,6 +490,7 @@ def merge_loopset(
     anchor_merge_dist=0,
     res=10_000,
     aggressive_collapse=False,
+    verbose=False,
 ):
     # merge data
     merged_loops = pd.concat(
@@ -504,8 +505,9 @@ def merge_loopset(
     names = [lps.loops_bedpe.Name.iloc[0] for lps in loopset_to_merge]
     merged_loopset = LoopSet(merged_loops, None)
     merged_loopset.cluster_adjacent_anchors(res=res, slack=anchor_merge_dist)
-    for name in names:
-        print(f"#{name}:", (merged_loopset.loops_bedpe.Name == name).sum())
+    if verbose:
+        for name in names:
+            print(f"#{name}:", (merged_loopset.loops_bedpe.Name == name).sum())
     # membership of loops
     # representative of loop cluster by centering
     loop_grp = merged_loopset.loops_bedpe.groupby(
